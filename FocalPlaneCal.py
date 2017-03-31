@@ -14,6 +14,29 @@ Caleb Marshall 2017
 mass_table = pd.read_csv('pretty.mas12',sep='\s+') #I altered the file itself to make it easier to parse
 
 
+#gather all the nuclei data into a class         
+class Nuclei():
+
+    def __init__(self, name):
+        #parse the input string
+        self.A = int(re.split('\D+',name)[0]) 
+        self.El = re.split('\d+',name)[1]
+        self.m,self.dm = self.get_mass()
+        
+    #searches the mass table for the given isotope
+    def get_mass(self,table=mass_table):
+        m = table[(table.El== self.El) & (table.A==self.A)]['Mass'].values/1000.0 #convert to MeV from KeV
+        dm = table[(table.El == self.El) & (table.A==self.A)]['Mass_Unc'].values/1000.0
+        
+        return m,dm
+
+    #just if you want to check data quickly
+    def __call__(self):
+        print 'Nuclei is '+str(self.A)+str(self.El)+'\n'
+        print 'Mass =',self.m,'+/-',self.dm 
+
+
+
 class Reaction():
 
     def __init__(self,a,A,b,B):
@@ -45,26 +68,6 @@ class Reaction():
         #Return the positive solutions squared. 
         return Eb
         
-#gather all the nuclei data into a class         
-class Nuclei():
-
-    def __init__(self, name):
-        #parse the input string
-        self.A = int(re.split('\D+',name)[0]) 
-        self.El = re.split('\d+',name)[1]
-        self.m,self.dm = self.get_mass()
-        
-    #searches the mass table for the given isotope
-    def get_mass(self,table=mass_table):
-        m = table[(table.El== self.El) & (table.A==self.A)]['Mass'].values/1000.0 #convert to MeV from KeV
-        dm = table[(table.El == self.El) & (table.A==self.A)]['Mass_Unc'].values/1000.0
-        
-        return m,dm
-
-    #just if you want to check data quickly
-    def __call__(self):
-        print 'Nuclei is '+str(self.A)+str(self.El)+'\n'
-        print 'Mass =',self.m,'+/-',self.dm 
         
 
 class Focal_Plane_Fit():
@@ -85,7 +88,7 @@ class Focal_Plane_Fit():
         
     # def add_point(self):
 
-    # def calc_rho(self,E_level,B_field):
+    #def calc_rho(self,E_level,B_field,E_level_Err,B_field_Err):
 
 #Define the reaction of interest and other parameters here d+var stands for uncertainty
 E_beam = 19.917 #MeV 
