@@ -2,22 +2,29 @@ import re
 import numpy as np
 from scipy import optimize
 import pandas as pd
-
+from Residual_Plot import residual_plot
+import matplotlib.pyplot as plt
 """
 Program is intended for use with TUNL Enge Splitpole.
 Using NNDC 2012 mass evaluation for masses as Q-Values.
 
-Caleb Marshall 2017
+Caleb Marshall, TUNL/NCSU, 2017
 """
 
 #convert to MeV/c^2
-u_convert = 931.494095
+u_convert = 931.49409
 
 #read in the mass table with the format provided
 mass_table = pd.read_csv('pretty.mas12',sep='\s+') #I altered the file itself to make it easier to parse
 
-
-
+#once again the chi_square objective function
+def chi_square(poly,x_rho,x_channel,unc):
+    poly = np.poly1d(poly)
+    x_theory = poly(x_channel)
+    temp = .5*((x_theory-x_rho)/unc)**2.0
+    return np.sum(temp)
+ 
+ 
 #gather all the nuclei data into a class         
 class Nuclei():
 
@@ -30,7 +37,7 @@ class Nuclei():
         
     #searches the mass table for the given isotope
     def get_mass_charge(self,table=mass_table):
-        self.m = table[(table.El== self.El) & (table.A==self.A)]['Mass'].values*u_convert #convert to MeV from KeV
+        self.m = table[(table.El== self.El) & (table.A==self.A)]['Mass'].values*u_convert
         self.dm = table[(table.El == self.El) & (table.A==self.A)]['Mass_Unc'].values*u_convert
         self.Z = table[(table.El == self.El) & (table.A==self.A)]['Z'].values
         
@@ -40,7 +47,7 @@ class Nuclei():
         print 'Mass =',self.m,'+/-',self.dm 
 
 
-
+#class that handles all the kinematics
 class Reaction():
 
     def __init__(self,a,A,b,B,B_field,E_lab,E_lab_unc):
@@ -91,7 +98,9 @@ class Focal_Plane_Fit():
 
         self.reactions = {}
         self.theta = float(raw_input('What is the lab angle? \n'))#making the assumption this points are all from the same theta 
+        #points is a list of dictionaries with rho,channel entry structure. Each of those has a value/uncertainty component.
         self.points = []
+        self.fits = {}
         
     def add_reaction(self):
         #take user input for reaction
@@ -130,15 +139,47 @@ class Focal_Plane_Fit():
         return rho,rho_unc
      
     #chi square fit 
-    def fit(self):
-        pass
-        
-    
-
-#Define the reaction of interest and other parameters here d+var stands for uncertainty
-E_beam = 19.917 #MeV 
-dE_beam = .005 #Mev
-
-
-
-
+    def fit(self,order=1):
+        N = len(self.points) # Number of data points
+        if N > (order+1): #check to see if we have n+2 points where n is the fit order
+            print "Using a fit of order",order
+            x_rho = np.zeros(N) #just decided to start with arrays. maybe dumb
+            x_channel = np.zeros(N)
+            x_unc = np.zeros(N)
+            coeff = np.ones(order+1) #these are the n+1 fit coefficients for the polynomial fit
+            for i,point in enumerate(self.points):
+                #collect the different values needed for chi_square fit
+                x_rho[i] = point['rho']['value']
+                x_channel[i] = point['channel']['value']
+                x_unc[i] = np.sqrt(point['rho']['unc']**2)
+                
+            #now scale channel points
+            channel_mu = np.sum(x_channel)/float(N) #scale will be average of all calibration peaks
+            x_channel = x_channel-channel_mu
+            sol = optimize.minimize(chi_square,coeff,args=(x_rho,x_channel,x_unc),method='Nelder-Mead')
+            #tell myself what I did
+            chi2 = sol.fun/(N-(order+1))
+            print "Chi Square is", chi2
+            print "Fit parameters are (from highest order term to lowest)",sol.x
+            self.fits[order] = np.poly1d(sol.x) #add to dictionary the polynomial object
+            print "Fit stored in member variable fits[%d]" %order
+            #create the a plot showing the fit and its residuals
+            residual_plot(x_channel,x_rho,x_unc,self.fits[order])
+            plt.text(max(x_channel-30),max(x_rho),r"$\chi^2=$",fontsize=20) #just print chi_square value on plot
+            plt.show()
+            #right now automatically doing higher order fits
+            if order < 3:
+                self.fit(order=(order+1))
+                
+        else:
+            print "Not enough points to preform fit of order",order,"or higher"
+            
+    #finally given channel number use a fit to give energy         
+    def peak_energy(self): 
+        channel = float(raw_input("Enter channel number."))
+        channer_unc = float(raw_input("Enter channel uncertainty."))
+        if len(self.fits()) > 1:
+            fit = int(raw_input("Which fit?"))
+        else:
+            fit = 1
+        print "Calibrated energy is:",self.fits[fit](channel)
