@@ -4,6 +4,7 @@ from scipy import optimize
 import pandas as pd
 from Residual_Plot import residual_plot
 import matplotlib.pyplot as plt
+import pymc as pm
 """
 Program is intended for use with TUNL Enge Splitpole.
 Using NNDC 2012 mass evaluation for masses as Q-Values.
@@ -23,8 +24,15 @@ def chi_square(poly,x_rho,x_channel,unc):
     x_theory = poly(x_channel)
     temp = .5*((x_theory-x_rho)/unc)**2.0
     return np.sum(temp)
- 
- 
+
+
+
+# for all values with uncertainty
+def measured_value(x,dx):
+    return { 'value' : x,
+             'unc'   : dx}
+               
+
 #gather all the nuclei data into a class         
 class Nuclei():
 
@@ -37,8 +45,9 @@ class Nuclei():
         
     #searches the mass table for the given isotope
     def get_mass_charge(self,table=mass_table):
-        self.m = table[(table.El== self.El) & (table.A==self.A)]['Mass'].values*u_convert
-        self.dm = table[(table.El == self.El) & (table.A==self.A)]['Mass_Unc'].values*u_convert
+        m = table[(table.El== self.El) & (table.A==self.A)]['Mass'].values*u_convert
+        dm = table[(table.El == self.El) & (table.A==self.A)]['Mass_Unc'].values*u_convert
+        self.m = measured_value(m,dm)
         self.Z = table[(table.El == self.El) & (table.A==self.A)]['Z'].values
         
     #just if you want to check data quickly
@@ -60,44 +69,22 @@ class Reaction():
         self.A = Nuclei(A)
         self.b = Nuclei(b)
         self.B = Nuclei(B)
-        self.Q = ((self.a.m+self.A.m)-(self.b.m+self.B.m))
-        self.dQ = np.sqrt(self.a.dm**2+self.A.dm**2+self.b.dm**2+self.B.dm**2) #using quadrature
+        __Q = ((self.a.m['value']+self.A.m['value'])-(self.b.m['value']+self.B.m['value']))
+        __dQ = np.sqrt(self.a.m['unc']**2+self.A.m['unc']**2+self.b.m['unc']**2+self.B.m['unc']**2) #using quadrature
+        self.Q = measured_value(__Q,__dQ)
         self.B_field = B_field #mag field
         self.q = self.b.Z #charge of projectile
-        self.E_lab = E_lab
-        self.E_lab_unc = E_lab_unc
+        self.E_lab = measured_value(E_lab,E_lab_unc)
+        self.theta = float(raw_input('What is the lab angle? \n'))#making the assumption this points are all from the same theta
         
         
-        
-    def calc_energy(self,E_level,theta,E_level_unc):
-        
-        #Based on Equation C.5 & C.6 for Christian's book.
-        theta = theta*(np.pi/180.0) #to radians 
-        r = (np.sqrt(self.a.m*self.b.m*self.E_lab)/(self.b.m+self.B.m))*np.cos(theta)
-        s = (self.E_lab*(self.B.m-self.a.m)+self.B.m*(self.Q-E_level))/(self.b.m+self.B.m)
-        Eb =  (r + np.sqrt(r**2.0+s))**2.0 #We only care about positive solutions
-        
-        #Check if solution is real.
-        if (np.isnan(Eb)):
-            print "Reaction is energetically forbidden!!"
-            return 0.0
-
-        #going with the assumption(for now) that the uncertainty is dominated by Q values and beam
-        Eb_unc = np.sqrt(self.dQ**2+self.E_lab_unc**2+E_level_unc**2)
-        
-        
-        #Return the positive solutions squared. 
-        return Eb,Eb_unc
-
-    
         
 
 class Focal_Plane_Fit():
 
     def __init__(self):
 
-        self.reactions = {}
-        self.theta = float(raw_input('What is the lab angle? \n'))#making the assumption this points are all from the same theta 
+        self.reactions = {} 
         #points is a list of dictionaries with rho,channel entry structure. Each of those has a value/uncertainty component.
         self.points = []
         self.fits = {}
@@ -111,32 +98,79 @@ class Focal_Plane_Fit():
         B_field = float(raw_input('What was the B field setting? \n'))
         E_lab = float(raw_input('Beam energy? \n'))
         E_lab_unc = float(raw_input('Beam energy uncertainty? \n'))
+        self.reactions[len(self.reactions.keys())] = Reaction(a,A,b,B,B_field,E_lab,E_lab_unc) #keys for dictionary go from 0,..,n 
         print 'Reaction',len(self.reactions.keys()),'has been defined as '+a+' + '+A+' -> '+B+' + '+b
         print 'E_beam =',E_lab,'+/- MeV',E_lab_unc,'With B-Field',B_field,'T' 
-        self.reactions[len(self.reactions.keys())] = Reaction(a,A,b,B,B_field,E_lab,E_lab_unc) #keys for dictionary go from 0,..,n 
-
         
+
+    #add a calibration point which includes rho and an associated channel value    
     def add_point(self):
         reaction = int(raw_input('Which reaction(0...n)? \n'))
         channel = float(raw_input('Enter the peak channel number. \n'))
         channel_unc = float(raw_input('What is the centroid uncertainty? \n'))
         level = float(raw_input('Enter the peak energy (MeV). \n'))
         level_unc = float(raw_input('Enter the peak uncertainty (MeV). \n'))
-        rho, rho_unc = self.calc_rho(reaction,level,level_unc)
-        rho = {'value':rho,'unc':rho_unc}
-        channel = {'value':channel,'unc':channel_unc}
+        rho = self.calc_rho(reaction,level,level_unc)
+        channel = measured_value(channel,channel_unc)
         point = {'rho':rho,'channel':channel}
         self.points.append(point)
+
+    
         
+    #added Monte Carlo error propagation for rho     
     def calc_rho(self,reaction,E_level,E_level_unc):
-        reaction = self.reactions[reaction] #just for short hand
-        Eb,Eb_unc = reaction.calc_energy(E_level,self.theta,E_level_unc)
-        p = np.sqrt(2.0*reaction.b.m*Eb+Eb**2.0) #"Relativistic" but Eb is not calculated that way  
-        rho = p/(reaction.b.Z*reaction.B_field)*.33356 #enge's paper not sure about this
-        rho_unc = np.sqrt((reaction.b.m/p*1.0/reaction.B_field)**2.0*Eb_unc**2.0 +
-                          (Eb/p*1.0/reaction.B_field)**2.0*reaction.b.dm**2.0)
-        print rho,rho_unc
-        return rho,rho_unc
+        reaction = self.reactions[reaction] #just for short hand pick out reaction
+        E_level = pm.Normal('E_level',E_level,(1.0/E_level_unc)**2)#setup normal distribution for E_level
+        reaction_variables = vars(reaction) #get variables from reaction
+        normals = {} # dictionary for all quantities in our model
+        normals["E_level"] = E_level #go ahead and add energy level
+        #define distributions, all normal for now
+        for var in reaction_variables:
+            #test to see if value has uncertainty
+            if type(reaction_variables[var]) == dict:                
+                temp_mu = reaction_variables[var]['value']
+                temp_sigma = reaction_variables[var]['unc']
+                temp_normal = pm.Normal(var,temp_mu,(1.0/temp_sigma)**2) #tau = 1/sigma^2 var is name of variable
+                normals[var] = temp_normal
+            #special cases for masses    
+            elif isinstance(reaction_variables[var],Nuclei):
+                temp = reaction_variables[var].m
+                temp_mu = temp['value']
+                temp_sigma = temp['unc']
+                temp_normal = pm.Normal(var,temp_mu,(1.0/temp_sigma)**2) 
+                normals[var] = temp_normal
+            else:
+                normals[var] = reaction_variables[var] #these are just constant parameters
+        #using pymc2 to give uncertainty on rho. This function accepts the sampled points and returns the rho value
+        @pm.deterministic
+        def rho_func(a=normals["a"], A=normals["A"], b=normals["b"], B=normals["B"],
+                     E_level=normals["E_level"], theta=normals["theta"], q=normals["q"],
+                     B_field=normals["B_field"],E_lab = normals["E_lab"],Q=normals["Q"]):
+            #Based on Equation C.5 & C.6 for Christian's book.
+            theta = theta*(np.pi/180.0) #to radians 
+            r = (np.sqrt(a*b*E_lab)/(b+B))*np.cos(theta)
+            s = (E_lab*(B-a)+B*(Q-E_level))/(b+B)
+            Eb =  (r + np.sqrt(r**2.0+s))**2.0 #We only care about positive solutions
+
+            #Check if solution is real.
+            if (np.isnan(Eb)):
+                print "Reaction is energetically forbidden!!"
+                return 0.0 
+
+            p = np.sqrt(2.0*b*Eb+Eb**2.0) #"Relativistic" but Eb is not calculated that way  
+            rho = p/(q*B_field)*.33356 #enge's paper not sure about this
+
+            #Return the positive solutions squared. 
+            return rho
+
+        #define model
+        model_variables = [i for i in normals.values() if isinstance(i,pm.Normal)] #get all the normal distributions
+        model_variables.append(rho_func)
+        model = pm.Model(model_variables)
+        mcmc = pm.MCMC(model) #prepare the sampler
+        mcmc.sample(50000,10000,) #50000 samples with a 10000 burn in 
+        print #blank line
+        print mcmc.stats()["rho_func"]
      
     #chi square fit 
     def fit(self,order=1):
@@ -183,3 +217,5 @@ class Focal_Plane_Fit():
         else:
             fit = 1
         print "Calibrated energy is:",self.fits[fit](channel)
+
+        
