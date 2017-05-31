@@ -24,7 +24,7 @@ mass_table = pd.read_csv('pretty.mas12',sep='\s+') #I altered the file itself to
 def chi_square(poly,x_rho,x_channel,unc):
     poly = np.poly1d(poly)
     x_theory = poly(x_channel)
-    temp = .5*((x_theory-x_rho)/unc)**2.0
+    temp = ((x_theory-x_rho)/unc)**2.0
     return np.sum(temp)
 
 #converts a standard deviation from a normal distribution to a log-normal sigma value
@@ -201,33 +201,47 @@ class Focal_Plane_Fit():
         
      
     #chi square fit will be good for quick cal 
-    def fit(self,order=2):
+    def fit(self,order=2,adjusted=False):
         N = len(self.points) # Number of data points
         if N > (order+1): #check to see if we have n+2 points where n is the fit order
             print "Using a fit of order",order
             x_rho = np.zeros(N) #just decided to start with arrays. maybe dumb
             x_channel = np.zeros(N)
-            x_unc = np.zeros(N)
+            if adjusted:
+                x_unc = self.adjust_unc()
+            x_unc = np.zeros(N) #rho unc
+            x_channel_unc = np.zeros(N) #channel unc
             coeff = np.ones(order+1) #these are the n+1 fit coefficients for the polynomial fit
             for i,point in enumerate(self.points):
                 #collect the different values needed for chi_square fit
                 x_rho[i] = point['rho']['value']
                 x_channel[i] = point['channel']['value']
-                x_unc[i] = np.abs(point['rho']['unc'])
+                x_unc[i] = point['rho']['unc']
+                x_channel_unc = point['channel']['unc']
                 
             #now scale channel points
             channel_mu = np.sum(x_channel)/float(N) #scale will be average of all calibration peaks
-            x_channel = x_channel-channel_mu
-            sol = optimize.minimize(chi_square,coeff,args=(x_rho,x_channel,x_unc),method='Nelder-Mead')
+            x_channel_scaled = x_channel-channel_mu
+            #create bounds
+            abound = lambda x:(0.0,1000.0) #creates a tuple
+            bounds = [abound(x) for x in xrange(order+1)] #list of tuples
+            #differential_evolution method, much faster than basin hopping with nelder-mead and seems to get same answers
+            sol = optimize.differential_evolution(chi_square,bounds,maxiter=100000,args=(x_rho,x_channel_scaled,x_unc))
             #tell myself what I did
             chi2 = sol.fun/(N-(order+1))
             print "Chi Square is", chi2
             print "Fit parameters are (from highest order term to lowest)",sol.x
+            #now adjust uncertainty to do fit again
+            x_unc[:] = self.adjust_unc(np.poly1d(sol.x),x_channel_scaled,x_rho,x_channel_unc,x_unc)
+            print "Now doing adjusted unc fit"
+            sol = optimize.differential_evolution(chi_square,bounds,maxiter=100000,args=(x_rho,x_channel_scaled,x_unc))
+            chi2 = sol.fun/(N-(order+1))
+            print "Chi Square is", chi2
             self.fits[order] = np.poly1d(sol.x) #add to dictionary the polynomial object
             print "Fit stored in member variable fits[%d]" %order
             #create the a plot showing the fit and its residuals
-            residual_plot(x_channel,x_rho,x_unc,self.fits[order])
-            plt.text(max(x_channel-30),max(x_rho),r"$\chi^2=$",fontsize=20) #just print chi_square value on plot
+            residual_plot(x_channel_scaled,x_rho,x_unc,self.fits[order])
+            #plt.text(max(x_channel-30),max(x_rho),r"$\chi^2=$",fontsize=20) #just print chi_square value on plot
             plt.show()
             #right now automatically doing higher order fits
             # if order < 3:
@@ -236,8 +250,16 @@ class Focal_Plane_Fit():
         else:
             print "Not enough points to preform fit of order",order,"or higher"
 
+    #this is based on description in spanc on how they estimate uncertainty
+    @staticmethod
+    def adjust_unc(poly,x,y,x_unc,y_unc):
+        dpoly = np.polyder(poly) #compute derivative
+        dpoly = dpoly(x) #evaluate
+        new_unc = np.sqrt((dpoly*x_unc)**2.0+y_unc**2.0) #add in quadrature
+        return new_unc
+    
     #now to try Bayesian fitting method          
-    def bay_fit(self,order=2):
+    def bay_fit(self):
         
         #get data
         x_obs = np.asarray([ele['channel']['value'] for ele in self.points])
@@ -248,59 +270,51 @@ class Focal_Plane_Fit():
         y_unc = np.asarray([log_normal_sigma(ele['rho']['value'],ele['rho']['unc']) for ele in self.points])
         y_median = np.exp(y_obs)
         y_68_cd = np.exp(y_unc)
-        #lets define priors for the polynomial terms
-        letters = string.ascii_uppercase #uppercase alphabet
 
-        # A = pm.Uniform('A',0,100)
-        # B = pm.Uniform('B',0,100)
-        # C = pm.Uniform('C',0,100)
-        priors = []
-        for i in xrange(order+1):
-            priors.append(pm.Uniform(letters[i],0,100)) #uniform priors from 0 to 100. Named 'A','B'... 
-            
-        #x likelihood
-        x = pm.Normal('x',x_obs,(1.0/x_unc)**2.0) #define a normal distribution for the channel distribution
+        #model is just 3rd order for now
+        A = pm.Uniform('A',0,1000) #x^3 term
+        B = pm.Uniform('B',0,1000) #x^2
+        C = pm.Uniform('C',0,1000) #x
+        D = pm.Uniform('D',0,1000)
         
-        #set up the fit function for x
         @pm.deterministic
-        def Npoly(x=x_obs,priors=priors,sig=y_unc):#,A=A,B=B,C=C,sig=y_unc):
-            #total = A*x**2.+B*x+C
-            i = 0
-            total = 0
-            for ele in priors:
-                temp = ele*np.power(x_obs,i)
-                i = i + 1
-                total = total + temp
+        def Npoly(x=x_obs,A=A,B=B,C=C,D=D,sig=y_unc):
+            total = A*x**3.0+B*x**2.0+C*x+D
             return np.log(total)-(.5*sig**2.0)
-        
+            
         #here goes the y one
-        y = pm.Lognormal('y',mu=Npoly,tau=(1.0/y_unc)**2.0,value=y_median,observed=True)
-        model_variables = [y,Npoly].extend(priors)
+        y = pm.Normal('y',mu=Npoly,tau=(1.0/y_unc)**2.0,value=y_obs,observed=True)
+        model_variables = [y,Npoly,A,B,C,D]
         model = pm.Model(model_variables)
         mcmc = pm.MCMC(model)
-        mcmc.sample(50000,25000)
+        mcmc.sample(200000,100000)
         print
+        print mcmc.stats()
         A = mcmc.stats()['A']['mean']
         B = mcmc.stats()['B']['mean']
         C = mcmc.stats()['C']['mean']
+        D = mcmc.stats()['D']['mean']
         print A, mcmc.stats()['A']['standard deviation'] 
         print B, mcmc.stats()['B']['standard deviation'] 
-        print C, mcmc.stats()['C']['standard deviation'] 
-        #fit = np.poly1d([A,B,C])
+        print C, mcmc.stats()['C']['standard deviation']
+        print D, mcmc.stats()['D']['standard deviation'] 
+        fit = np.poly1d([A,B,C,D])
         #x = np.linspace(500,4500,100000)
         residual_plot(x_obs,y_values,y_unc,fit)
-        #plt.plot(x_obs,y_values,marker='o',linestyle='None')
-        #plt.plot(x,A*x**2+B*x+C)
         plt.show()
-    
-    #finally given channel number use a fit to give energy         
-    def peak_energy(self): 
+
+    def input_peak(self):
         channel = float(raw_input("Enter channel number."))
         channer_unc = float(raw_input("Enter channel uncertainty."))
+        channel = measured_value(channel,channel_unc)
+        self.peak_energy(channel)
+        
+    #finally given channel number use a fit to give energy         
+    def peak_energy(self,channel,fit_order=None): 
+        
         if len(self.fits()) > 1:
             fit = int(raw_input("Which fit?"))
-        else:
-            fit = 1
+            
         print "Calibrated energy is:",self.fits[fit](channel)
 
     #simple function to read in a file with calibration points and preform a fit on them    
@@ -336,6 +350,6 @@ def btest():
     test.read_calibration('./23Na.dat',reaction=0)
     test.read_calibration('./12C.dat',reaction=1)
     test.read_calibration('./16O.dat',reaction=2)
-    test.bay_fit(order=3)
-    test.fit()
-    
+    test.bay_fit()
+    #test.fit(order=3)
+    #return test
