@@ -237,6 +237,7 @@ class Focal_Plane_Fit():
             sol = optimize.differential_evolution(chi_square,bounds,maxiter=100000,args=(x_rho,x_channel_scaled,x_unc))
             chi2 = sol.fun/(N-(order+1))
             print "Chi Square is", chi2
+            print sol
             self.fits[order] = np.poly1d(sol.x) #add to dictionary the polynomial object
             print "Fit stored in member variable fits[%d]" %order
             #create the a plot showing the fit and its residuals
@@ -263,6 +264,8 @@ class Focal_Plane_Fit():
         
         #get data
         x_obs = np.asarray([ele['channel']['value'] for ele in self.points])
+        channel_mu = np.sum(x_obs)/float(len(x_obs))
+        x_scaled = x_obs - channel_mu
         x_unc = np.asarray([ele['channel']['unc'] for ele in self.points])
         #switch to log normal parameters
         y_values = np.asarray([ele['rho']['value'] for ele in self.points])
@@ -270,26 +273,31 @@ class Focal_Plane_Fit():
         y_unc = np.asarray([log_normal_sigma(ele['rho']['value'],ele['rho']['unc']) for ele in self.points])
         y_median = np.exp(y_obs)
         y_68_cd = np.exp(y_unc)
-
+        
         #model is just 3rd order for now
-        A = pm.Uniform('A',0,1000) #x^3 term
-        B = pm.Uniform('B',0,1000) #x^2
-        C = pm.Uniform('C',0,1000) #x
+        A = pm.Uniform('A',0,1) #x^3 term
+        B = pm.Uniform('B',0,1) #x^2
+        C = pm.Uniform('C',0,1) #x
         D = pm.Uniform('D',0,1000)
         
+        #x errors
+        #x = pm.Normal('x',x_obs,(1.0/x_unc)**2.0)
+        
         @pm.deterministic
-        def Npoly(x=x_obs,A=A,B=B,C=C,D=D,sig=y_unc):
+        def Npoly(x=x_obs,x_sig=x_unc,A=A,B=B,C=C,D=D,sig=y_unc,mean=channel_mu):
+            #x = np.random.normal(loc=x,scale=x_sig)
+            x = x-mean
             total = A*x**3.0+B*x**2.0+C*x+D
             return np.log(total)-(.5*sig**2.0)
             
         #here goes the y one
-        y = pm.Normal('y',mu=Npoly,tau=(1.0/y_unc)**2.0,value=y_obs,observed=True)
-        model_variables = [y,Npoly,A,B,C,D]
+        y = pm.Lognormal('y',mu=Npoly,tau=(1.0/y_unc)**2.0,value=y_values,observed=True)
+        model_variables = [y,A,B,C,D]
         model = pm.Model(model_variables)
         mcmc = pm.MCMC(model)
-        mcmc.sample(200000,100000)
+        mcmc.sample(150000,burn=95000)
         print
-        print mcmc.stats()
+        pm.Matplot.plot(mcmc)
         A = mcmc.stats()['A']['mean']
         B = mcmc.stats()['B']['mean']
         C = mcmc.stats()['C']['mean']
@@ -299,9 +307,9 @@ class Focal_Plane_Fit():
         print C, mcmc.stats()['C']['standard deviation']
         print D, mcmc.stats()['D']['standard deviation'] 
         fit = np.poly1d([A,B,C,D])
-        #x = np.linspace(500,4500,100000)
-        residual_plot(x_obs,y_values,y_unc,fit)
+        residual_plot(x_scaled,y_values,y_unc,fit)
         plt.show()
+        
 
     def input_peak(self):
         channel = float(raw_input("Enter channel number."))
@@ -314,6 +322,8 @@ class Focal_Plane_Fit():
         
         if len(self.fits()) > 1:
             fit = int(raw_input("Which fit?"))
+
+        
             
         print "Calibrated energy is:",self.fits[fit](channel)
 
@@ -350,6 +360,6 @@ def btest():
     test.read_calibration('./23Na.dat',reaction=0)
     test.read_calibration('./12C.dat',reaction=1)
     test.read_calibration('./16O.dat',reaction=2)
-    test.bay_fit()
     #test.fit(order=3)
-    #return test
+    test.bay_fit()
+    return test
