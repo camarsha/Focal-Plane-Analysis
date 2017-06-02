@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib.gridspec as gridspec
 
-def residual_plot(datax,datay,err,fit_funtion):
+def residual_plot(datax,datay,err,fit_funtion,xerr=None):
     
     res = datay-fit_funtion(datax) #calculate the residuals
     
@@ -23,7 +23,7 @@ def residual_plot(datax,datay,err,fit_funtion):
     ax0 = plt.subplot(grid[0]) #pick the larger area plot for fit plot
     ax0.set_xticklabels([]) #going to use a common axis so remove the x labels
     plt.ylabel(r'$\rho$ (cm)',fontsize=20)
-    plt.errorbar(datax,datay,yerr=err,marker='o',linestyle='None') #plot data with just errors and points
+    plt.errorbar(datax,datay,xerr=xerr,yerr=err,marker='o',linestyle='None') #plot data with just errors and points
     plt.plot(x,y) #fit line
     plt.title('Fit and Residuals') #go ahead and add title so it is on the top subplot
     #next the residuals

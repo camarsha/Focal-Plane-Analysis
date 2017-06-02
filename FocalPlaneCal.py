@@ -241,9 +241,9 @@ class Focal_Plane_Fit():
             self.fits[order] = np.poly1d(sol.x) #add to dictionary the polynomial object
             print "Fit stored in member variable fits[%d]" %order
             #create the a plot showing the fit and its residuals
-            residual_plot(x_channel_scaled,x_rho,x_unc,self.fits[order])
+            #residual_plot(x_channel_scaled,x_rho,x_unc,self.fits[order])
             #plt.text(max(x_channel-30),max(x_rho),r"$\chi^2=$",fontsize=20) #just print chi_square value on plot
-            plt.show()
+            #plt.show()
             #right now automatically doing higher order fits
             # if order < 3:
             #     self.fit(order=(order+1))
@@ -275,27 +275,32 @@ class Focal_Plane_Fit():
         y_68_cd = np.exp(y_unc)
         
         #model is just 3rd order for now
-        A = pm.Uniform('A',0,1) #x^3 term
-        B = pm.Uniform('B',0,1) #x^2
-        C = pm.Uniform('C',0,1) #x
+        A = pm.Uniform('A',0,1000) #x^3 term
+        B = pm.Uniform('B',0,1000) #x^2
+        C = pm.Uniform('C',0,1000) #x
         D = pm.Uniform('D',0,1000)
         
         #x errors
-        #x = pm.Normal('x',x_obs,(1.0/x_unc)**2.0)
+        x = pm.Normal('x',x_obs,(1.0/x_unc)**2.0)
         
         @pm.deterministic
-        def Npoly(x=x_obs,x_sig=x_unc,A=A,B=B,C=C,D=D,sig=y_unc,mean=channel_mu):
-            #x = np.random.normal(loc=x,scale=x_sig)
+        def Npoly(x=x,A=A,B=B,C=C,D=D,sig=y_unc,mean=channel_mu):
             x = x-mean
             total = A*x**3.0+B*x**2.0+C*x+D
             return np.log(total)-(.5*sig**2.0)
             
         #here goes the y one
         y = pm.Lognormal('y',mu=Npoly,tau=(1.0/y_unc)**2.0,value=y_values,observed=True)
-        model_variables = [y,A,B,C,D]
+        model_variables = [y,x,A,B,C,D]
         model = pm.Model(model_variables)
         mcmc = pm.MCMC(model)
-        mcmc.sample(150000,burn=95000)
+        #use regular fit to initialize coeff
+        self.fit(order=3)
+        A.value = self.fits[3][3]
+        B.value = self.fits[3][2]
+        C.value = self.fits[3][1]
+        D.value = self.fits[3][0]
+        mcmc.sample(100000,25000)
         print
         pm.Matplot.plot(mcmc)
         A = mcmc.stats()['A']['mean']
@@ -307,7 +312,7 @@ class Focal_Plane_Fit():
         print C, mcmc.stats()['C']['standard deviation']
         print D, mcmc.stats()['D']['standard deviation'] 
         fit = np.poly1d([A,B,C,D])
-        residual_plot(x_scaled,y_values,y_unc,fit)
+        residual_plot(x_scaled,y_values,y_unc,fit,x_unc)
         plt.show()
         
 
