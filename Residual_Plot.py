@@ -28,7 +28,7 @@ def residual_plot(datax,datay,err,fit_funtion,xerr=None):
     plt.title('Fit and Residuals') #go ahead and add title so it is on the top subplot
     #next the residuals
     ax1 = plt.subplot(grid[1]) #switch to smaller subplot
-    plt.errorbar(datax,res,yerr=err,marker='o',linestyle='None') #again just points no lines
+    plt.errorbar(datax,res,xerr=xerr,yerr=err,marker='o',linestyle='None') #again just points no lines
     plt.ylabel('Residuals',fontsize=20) 
     plt.xlabel('Channel #',fontsize=20)
     plt.axhline(y=0,linewidth=2, color='k',linestyle='--') #draw a horizontal line at 0 to guide the eye

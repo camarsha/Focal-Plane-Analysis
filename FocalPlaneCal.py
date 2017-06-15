@@ -42,7 +42,6 @@ def log_normal_mu(mu,sig):
 def measured_value(x,dx):
     return { 'value' : x,
              'unc'   : dx}
-               
 
 #gather all the nuclei data into a class         
 class Nuclei():
@@ -101,7 +100,8 @@ class Focal_Plane_Fit():
         #points is a list of dictionaries with rho,channel entry structure. Each of those has a value/uncertainty component.
         self.points = []
         self.fits = {}
-        
+        self.fits_bay = {}
+        self.output_peaks = []
         
     def add_reaction(self):
         #take user input for reaction
@@ -132,16 +132,10 @@ class Focal_Plane_Fit():
         level = float(raw_input('Enter the peak energy (MeV). \n'))
         level_unc = float(raw_input('Enter the peak uncertainty (MeV). \n'))
         self.add_point(reaction,level,level_unc,channel,channel_unc)
-    
-        
-    #added Monte Carlo error propagation for rho     
-    def calc_rho(self,reaction,E_level,E_level_unc,steps=10000,burn=1000):
-        reaction = self.reactions[reaction] #just for short hand pick out reaction
-        #print reaction.name() #just make sure you know which reaction is being calculated
-        E_level = pm.Normal('E_level',E_level,(1.0/E_level_unc)**2)#setup normal distribution for E_level
+
+    def create_distributions(self,reaction):
         reaction_variables = vars(reaction) #get variables from reaction
         normals = {} # dictionary for all quantities in our model
-        normals["E_level"] = E_level #go ahead and add energy level
         #define distributions, all normal for now
         #this loop is pulling variables directly from the reaction.__dict__ method 
         for var in reaction_variables:
@@ -163,6 +157,16 @@ class Focal_Plane_Fit():
                     normals[var] = temp_normal
             else:
                 normals[var] = reaction_variables[var] #these are just constant parameters
+                
+        return normals
+    
+    #added Monte Carlo error propagation for rho     
+    def calc_rho(self,reaction,E_level,E_level_unc,steps=10000,burn=1000):
+        reaction = self.reactions[reaction] #just for short hand pick out reaction
+        #print reaction.name() #just make sure you know which reaction is being calculated
+        E_level = pm.Normal('E_level',E_level,(1.0/E_level_unc)**2.0)#setup normal distribution for E_level
+        normals = self.create_distributions(reaction)
+        normals["E_level"] = E_level #go ahead and add energy level
         #using pymc2 to give uncertainty on rho. This function accepts the sampled points and returns the rho value
         @pm.deterministic
         def rho_func(a=normals["a"], A=normals["A"], b=normals["b"], B=normals["B"],
@@ -181,7 +185,8 @@ class Focal_Plane_Fit():
 
             p = np.sqrt(2.0*b*Eb+Eb**2.0) #"Relativistic" but Eb is not calculated that way  
             rho = p/(q*B_field)*.33356 #enge's paper not sure about this
-
+            
+            
             #Return the positive solutions squared. 
             return rho
 
@@ -190,7 +195,7 @@ class Focal_Plane_Fit():
         model_variables.append(rho_func)
         model = pm.Model(model_variables)
         mcmc = pm.MCMC(model) #prepare the sampler
-        mcmc.sample(steps,burn) #50000 samples with a 10000 burn in
+        mcmc.sample(steps,burn,progress_bar=False) #50000 samples with a 10000 burn in
         trace = mcmc.trace('rho_func')
         print 
         print "Sampling done, here are the stats"
@@ -201,14 +206,12 @@ class Focal_Plane_Fit():
         
      
     #chi square fit will be good for quick cal 
-    def fit(self,order=2,adjusted=False):
+    def fit(self,order=2,plot=True):
         N = len(self.points) # Number of data points
         if N > (order+1): #check to see if we have n+2 points where n is the fit order
             print "Using a fit of order",order
             x_rho = np.zeros(N) #just decided to start with arrays. maybe dumb
             x_channel = np.zeros(N)
-            if adjusted:
-                x_unc = self.adjust_unc()
             x_unc = np.zeros(N) #rho unc
             x_channel_unc = np.zeros(N) #channel unc
             coeff = np.ones(order+1) #these are the n+1 fit coefficients for the polynomial fit
@@ -223,31 +226,27 @@ class Focal_Plane_Fit():
             channel_mu = np.sum(x_channel)/float(N) #scale will be average of all calibration peaks
             x_channel_scaled = x_channel-channel_mu
             #create bounds
-            abound = lambda x:(0.0,1000.0) #creates a tuple
+            abound = lambda x:(-1000.0,1000.0) #creates a tuple
             bounds = [abound(x) for x in xrange(order+1)] #list of tuples
             #differential_evolution method, much faster than basin hopping with nelder-mead and seems to get same answers
             sol = optimize.differential_evolution(chi_square,bounds,maxiter=100000,args=(x_rho,x_channel_scaled,x_unc))
             #tell myself what I did
-            chi2 = sol.fun/(N-(order+1))
+            chi2 = sol.fun/(N-(order))
             print "Chi Square is", chi2
             print "Fit parameters are (from highest order term to lowest)",sol.x
             #now adjust uncertainty to do fit again
             x_unc[:] = self.adjust_unc(np.poly1d(sol.x),x_channel_scaled,x_rho,x_channel_unc,x_unc)
             print "Now doing adjusted unc fit"
             sol = optimize.differential_evolution(chi_square,bounds,maxiter=100000,args=(x_rho,x_channel_scaled,x_unc))
-            chi2 = sol.fun/(N-(order+1))
+            chi2 = sol.fun/(N-(order))
             print "Chi Square is", chi2
-            print sol
+            print "Adjusted fit parameters are (from highest order term to lowest)",sol.x
             self.fits[order] = np.poly1d(sol.x) #add to dictionary the polynomial object
             print "Fit stored in member variable fits[%d]" %order
             #create the a plot showing the fit and its residuals
-            #residual_plot(x_channel_scaled,x_rho,x_unc,self.fits[order])
-            #plt.text(max(x_channel-30),max(x_rho),r"$\chi^2=$",fontsize=20) #just print chi_square value on plot
-            #plt.show()
-            #right now automatically doing higher order fits
-            # if order < 3:
-            #     self.fit(order=(order+1))
-                
+            if plot:
+                residual_plot(x_channel_scaled,x_rho,x_unc,self.fits[order])
+                plt.show()            
         else:
             print "Not enough points to preform fit of order",order,"or higher"
 
@@ -260,7 +259,7 @@ class Focal_Plane_Fit():
         return new_unc
     
     #now to try Bayesian fitting method          
-    def bay_fit(self):
+    def bay_fit(self,order=2,trace_plot=False,plot=True):
         
         #get data
         x_obs = np.asarray([ele['channel']['value'] for ele in self.points])
@@ -268,53 +267,58 @@ class Focal_Plane_Fit():
         x_scaled = x_obs - channel_mu
         x_unc = np.asarray([ele['channel']['unc'] for ele in self.points])
         #switch to log normal parameters
-        y_values = np.asarray([ele['rho']['value'] for ele in self.points])
-        y_obs = np.asarray([log_normal_mu(ele['rho']['value'],ele['rho']['unc']) for ele in self.points])
-        y_unc = np.asarray([log_normal_sigma(ele['rho']['value'],ele['rho']['unc']) for ele in self.points])
-        y_median = np.exp(y_obs)
-        y_68_cd = np.exp(y_unc)
+        y_obs = np.asarray([ele['rho']['value'] for ele in self.points])
+        y_unc = np.asarray([ele['rho']['unc'] for ele in self.points])
         
-        #model is just 3rd order for now
-        A = pm.Uniform('A',0,1000) #x^3 term
-        B = pm.Uniform('B',0,1000) #x^2
-        C = pm.Uniform('C',0,1000) #x
-        D = pm.Uniform('D',0,1000)
+        letters = string.ascii_uppercase #all upper case letters for prior names
+        #uniform prior generator
+        priors = {letters[i]:pm.Normal(letters[i],0,1) for i in xrange(order+1)} #Normal priors
+        priors[max(priors.keys())] = pm.Uniform(max(priors.keys()),0,100) #intercept is positive and between 0 and 100 cm
+        sorted_priors = np.asarray([j for i,j in sorted(priors.items())])    
+     
+        #x uncertainties 
+        x = x_scaled #pm.Normal('x',x_scaled,(1.0/x_unc)**2.0)
         
-        #x errors
-        x = pm.Normal('x',x_obs,(1.0/x_unc)**2.0)
+        #use regular fit to initialize scale of parameters
+        self.fit(order=order,plot=False)
         
         @pm.deterministic
-        def Npoly(x=x,A=A,B=B,C=C,D=D,sig=y_unc,mean=channel_mu):
-            x = x-mean
-            total = A*x**3.0+B*x**2.0+C*x+D
-            return np.log(total)-(.5*sig**2.0)
-            
-        #here goes the y one
-        y = pm.Lognormal('y',mu=Npoly,tau=(1.0/y_unc)**2.0,value=y_values,observed=True)
-        model_variables = [y,x,A,B,C,D]
-        model = pm.Model(model_variables)
-        mcmc = pm.MCMC(model)
-        #use regular fit to initialize coeff
-        self.fit(order=3)
-        A.value = self.fits[3][3]
-        B.value = self.fits[3][2]
-        C.value = self.fits[3][1]
-        D.value = self.fits[3][0]
-        mcmc.sample(100000,25000)
-        print
-        pm.Matplot.plot(mcmc)
-        A = mcmc.stats()['A']['mean']
-        B = mcmc.stats()['B']['mean']
-        C = mcmc.stats()['C']['mean']
-        D = mcmc.stats()['D']['mean']
-        print A, mcmc.stats()['A']['standard deviation'] 
-        print B, mcmc.stats()['B']['standard deviation'] 
-        print C, mcmc.stats()['C']['standard deviation']
-        print D, mcmc.stats()['D']['standard deviation'] 
-        fit = np.poly1d([A,B,C,D])
-        residual_plot(x_scaled,y_values,y_unc,fit,x_unc)
-        plt.show()
+        def Npoly(x=x,priors=sorted_priors):
+            x = x #center value around mean of x
+            total = np.poly1d(priors)(x)
+            return total
+
+        y = pm.Normal('y',mu=Npoly,tau=(1.0/y_unc)**2.0,value=y_obs,observed=True)
+
+        #set model up
+        model = pm.Model(y,[sorted_priors,x])
+        mcmc = pm.MCMC(model)   
+
+        #initialize values
+        for i in xrange(order+1):
+            sorted_priors[i].value = self.fits[order][order-i]
         
+        #set custom step for y
+        mcmc.sample(100000,50000,5)
+        print 
+        if trace_plot:
+            pm.Matplot.plot(mcmc)
+            plt.show()
+
+        Fit = []
+        
+        for ele in sorted(priors.keys()):
+            coeff,coeff_unc = mcmc.stats()[ele]['mean'],mcmc.stats()[ele]['standard deviation']
+            print "Mean for "+ele+" is",coeff,"+/-",coeff_unc
+            Fit.append(measured_value(coeff,coeff_unc))
+                
+        if plot:
+            fit = np.poly1d([ele['value'] for ele in Fit])
+            residual_plot(x_scaled,y_obs,y_unc,fit,x_unc)
+            plt.show()
+
+        Fit.append(channel_mu) #give offset 
+        self.fits_bay['Order_'+str(order)] = Fit[:] #store polynomial parameters
 
     def input_peak(self):
         channel = float(raw_input("Enter channel number."))
@@ -323,14 +327,64 @@ class Focal_Plane_Fit():
         self.peak_energy(channel)
         
     #finally given channel number use a fit to give energy         
-    def peak_energy(self,channel,fit_order=None): 
-        
-        if len(self.fits()) > 1:
-            fit = int(raw_input("Which fit?"))
+    def peak_energy(self,reaction,channel,fit_order=2):
+        if type(channel) == dict:
+            reaction = self.reactions[reaction]
+            normals = self.create_distributions(reaction) #get reaction variables as distributions
+            #calc rho from normal distributions in polynomial fit
+            coeff = []
+            letters = string.ascii_uppercase
+            i = 0
+            for ele in self.fits_bay['Order_'+str(fit_order)]:
+                if type(ele) is dict:
+                    mu = ele['value']
+                    sigma = ele['unc'] 
+                    coeff.append(pm.Normal(letters[-i-1],mu=mu,tau=(1.0/sigma)**2.0)) #doing letters in reverse Z,Y,X to avoid conflicts in names
+                    i = i + 1
+                else:
+                    x_mu = ele #exception for average mu because it is a scalar that is exact
+                    
+            #channel normal distribution
+            Channel = pm.Normal('Channel',mu=(channel['value']-x_mu),tau=(1.0/channel['unc'])**2.0)
 
-        
             
-        print "Calibrated energy is:",self.fits[fit](channel)
+                    
+            print "Calculating the fitted rho value and Energy..."
+
+            @pm.deterministic
+            def calc_rho(channel=Channel,coeff=coeff):
+                value = np.poly1d(coeff)(channel)
+                return value
+
+            #now to do the kinematics backwards to get E_level
+            @pm.deterministic
+            def E_level(rho=calc_rho,A=normals["A"],B=normals["B"],
+                        a=normals["a"],b=normals["b"],E_lab=normals["E_lab"],
+                        theta=normals["theta"], q=normals["q"],
+                        B_field=normals["B_field"],Q=normals["Q"]):
+
+                theta = theta*(np.pi/180.0) #to radians
+                r = (np.sqrt(a*b*E_lab))/(b+B)*np.cos(theta)  
+                constants = (B_field*rho*q)/.33356
+                Eb = (-b+np.sqrt(b**2.0+constants**2.0))#quadratic formula to get this 
+                w = ((np.sqrt(Eb)-r)**2.0-r**2.0)#another term to simplify equations
+                E = Q-(((b+B)*w-E_lab*(B-a))/B) #put it all together
+                return E
+             
+            model = pm.Model([calc_rho,E_level],coeff,Channel)
+            mcmc = pm.MCMC(model)
+            mcmc.sample(10000,1000,verbose=0)
+            print
+            mu =  mcmc.stats()['calc_rho']['mean']
+            sig = mcmc.stats()['calc_rho']['standard deviation']
+            E = mcmc.stats()['E_level']['mean']
+            E_sig = mcmc.stats()['E_level']['standard deviation']
+            print "Rho",mu,"+/-",sig
+            print "E_level",E,"+/-",E_sig
+        
+        else:
+            print "Need a dictionary of value and uncertainty!!"
+        
 
     #simple function to read in a file with calibration points and preform a fit on them    
     def read_calibration(self,cal_file,reaction=None):
@@ -344,7 +398,7 @@ class Focal_Plane_Fit():
             channel = data["channel"][i]
             channel_unc = data["channel_unc"][i]
             self.add_point(reaction,level,level_unc,channel,channel_unc)
-        #self.fit()
+        
 
 #test on some pretty suspect data, just for basic functionality checks
 def atest():
@@ -366,5 +420,5 @@ def btest():
     test.read_calibration('./12C.dat',reaction=1)
     test.read_calibration('./16O.dat',reaction=2)
     #test.fit(order=3)
-    test.bay_fit()
-    return test
+    test.bay_fit(order=3,trace_plot=False,plot=False)
+    test.peak_energy(0,measured_value(2232.1,2.2),fit_order=3)
