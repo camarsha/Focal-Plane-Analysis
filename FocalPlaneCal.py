@@ -272,26 +272,25 @@ class Focal_Plane_Fit():
         
         letters = string.ascii_uppercase #all upper case letters for prior names
         #uniform prior generator
-        priors = {letters[i]:pm.Normal(letters[i],0,1) for i in xrange(order+1)} #Normal priors
-        priors[max(priors.keys())] = pm.Uniform(max(priors.keys()),0,100) #intercept is positive and between 0 and 100 cm
+        priors = {letters[i]:pm.Normal(letters[i],mu=0.0,tau=.001) for i in xrange(order+1)} #Normal priors
+        #priors[max(priors.keys())] = pm.Uniform(max(priors.keys()),0,100) #intercept is positive and between 0 and 100 cm
         sorted_priors = np.asarray([j for i,j in sorted(priors.items())])    
      
         #x uncertainties 
-        x = x_scaled #pm.Normal('x',x_scaled,(1.0/x_unc)**2.0)
+        x = pm.Normal('x',x_scaled,(1.0/x_unc)**2.0,size=len(x_scaled))
         
         #use regular fit to initialize scale of parameters
-        self.fit(order=order,plot=False)
+        self.fit(order=order,plot=False)  
         
         @pm.deterministic
         def Npoly(x=x,priors=sorted_priors):
-            x = x #center value around mean of x
             total = np.poly1d(priors)(x)
             return total
-
-        y = pm.Normal('y',mu=Npoly,tau=(1.0/y_unc)**2.0,value=y_obs,observed=True)
+        
+        y_fit = pm.Normal('y',mu=Npoly,tau=(1.0/y_unc)**2.0,value=y_obs,observed=True)
 
         #set model up
-        model = pm.Model(y,[sorted_priors,x])
+        model = pm.Model(y_fit,[sorted_priors,x])
         mcmc = pm.MCMC(model)   
 
         #initialize values
@@ -299,7 +298,7 @@ class Focal_Plane_Fit():
             sorted_priors[i].value = self.fits[order][order-i]
         
         #set custom step for y
-        mcmc.sample(100000,50000,5)
+        mcmc.sample(iter=100000,burn=50000,thin=10)
         print 
         if trace_plot:
             pm.Matplot.plot(mcmc)
@@ -311,7 +310,7 @@ class Focal_Plane_Fit():
             coeff,coeff_unc = mcmc.stats()[ele]['mean'],mcmc.stats()[ele]['standard deviation']
             print "Mean for "+ele+" is",coeff,"+/-",coeff_unc
             Fit.append(measured_value(coeff,coeff_unc))
-                
+            
         if plot:
             fit = np.poly1d([ele['value'] for ele in Fit])
             residual_plot(x_scaled,y_obs,y_unc,fit,x_unc)
@@ -420,5 +419,5 @@ def btest():
     test.read_calibration('./12C.dat',reaction=1)
     test.read_calibration('./16O.dat',reaction=2)
     #test.fit(order=3)
-    test.bay_fit(order=3,trace_plot=False,plot=False)
+    test.bay_fit(order=3,trace_plot=True,plot=True)
     test.peak_energy(0,measured_value(2232.1,2.2),fit_order=3)
