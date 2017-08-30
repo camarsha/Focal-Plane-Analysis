@@ -65,15 +65,16 @@ class Nudat_Page():
 #and spin parities
 class Level():
 
-    def __init__(self,E,J,parity):
+    def __init__(self,E,E_unc,J,parity):
         self.E = E
+        self.E_unc = E_unc
         self.J = J
         self.parity = parity
         self.info = str(E)+' keV '+str(J)+str(parity) #if you want to quickly check the level info
 
 
 
-#class for a nuclei, deverives from the base class levels
+#class for a nuclei
 class Nuclie():
 
     def __init__(self,name):

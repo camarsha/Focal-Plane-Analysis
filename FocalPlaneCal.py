@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import pymc as pm
 import string
 
+
 """
 Program is intended for use with TUNL Enge Splitpole.
 Using NNDC 2012 mass evaluation for masses as Q-Values.
@@ -14,65 +15,60 @@ Using NNDC 2012 mass evaluation for masses as Q-Values.
 Caleb Marshall, TUNL/NCSU, 2017
 """
 
-#convert to MeV/c^2
-u_convert = 931.49409
+# convert to MeV/c^2
+u_convert = 931.4940954
 
-#read in the mass table with the format provided
-mass_table = pd.read_csv('pretty.mas12',sep='\s+') #I altered the file itself to make it easier to parse
+# read in the mass table with the format provided
+mass_table = pd.read_csv('pretty.mas12', sep='\s+')  # Pretty file.
 
-#once again the chi_square objective function
-def chi_square(poly,x_rho,x_channel,unc):
+
+# once again the chi_square objective function
+def chi_square(poly, rho, channel, unc):
     poly = np.poly1d(poly)
-    x_theory = poly(x_channel)
-    temp = ((x_theory-x_rho)/unc)**2.0
+    theory = poly(channel)
+    temp = ((theory-rho)/unc)**2.0
     return np.sum(temp)
 
-#converts a standard deviation from a normal distribution to a log-normal sigma value
-#mu is normal distribution mean, sig is its s.d
-def log_normal_sigma(mu,sig):
-    log_sig = np.sqrt(np.log(1.+(sig/mu)**2.)) #equation can be found on Wikipedia
-    return log_sig
-
-#converts the normal distribution mean to the log-normal mu
-def log_normal_mu(mu,sig):
-    log_mu = np.log(mu/(np.sqrt(1.+(sig/mu)**2.)))
-    return log_mu
 
 # for all values with uncertainty
-def measured_value(x,dx):
-    return { 'value' : x,
-             'unc'   : dx}
+def measured_value(x, dx):
+    return {'value': x,
+            'unc': dx}
 
-#gather all the nuclei data into a class         
+
+# gather all the nuclei data into a class
 class Nuclei():
 
     def __init__(self, name):
-        #parse the input string
+        # parse the input string
         self.name = name
-        self.A = int(re.split('\D+',name)[0]) 
-        self.El = re.split('\d+',name)[1]
+        self.A = int(re.split('\D+', name)[0])
+        self.El = re.split('\d+', name)[1]
         self.get_mass_charge()
-        
-        
-    #searches the mass table for the given isotope
-    def get_mass_charge(self,table=mass_table):
-        m = table[(table.El== self.El) & (table.A==self.A)]['Mass'].values*u_convert
-        dm = table[(table.El == self.El) & (table.A==self.A)]['Mass_Unc'].values*u_convert
-        self.m = measured_value(m,dm)
-        self.Z = table[(table.El == self.El) & (table.A==self.A)]['Z'].values
-        
-    #just if you want to check data quickly
+       
+    # searches the mass table for the given isotope
+    def get_mass_charge(self, table=mass_table):
+        m = table[(table.El == self.El) &
+                  (table.A == self.A)]['Mass'].values*u_convert
+        dm = table[(table.El == self.El)
+                   & (table.A == self.A)]['Mass_Unc'].values*u_convert
+        self.m = measured_value(m, dm)
+        self.Z = table[(table.El == self.El) &
+                       (table.A == self.A)]['Z'].values
+
+    # just if you want to check data quickly
     def __call__(self):
         print 'Nuclei is '+str(self.A)+str(self.El)+'\n'
-        print 'Mass =',self.m,'+/-',self.dm 
+        print 'Mass =', self.m['value'], '+/-', self.m['unc']
 
 
-#class that handles all the kinematics
+# class that handles all the kinematics
 class Reaction():
 
-    def __init__(self,a,A,b,B,B_field,E_lab,E_lab_unc,theta):
+    def __init__(self, a, A, b, B, B_field,
+                 E_lab, E_lab_unc, theta, mass_unc=False):
         """
-        Parse reaction names,looks up there masses, and calculates Q-value(MeV) 
+        Parse reaction names,looks up there masses, and calculates Q-value(MeV)
         E_lab = MeV
         B_field = Tesla
         """
@@ -80,31 +76,42 @@ class Reaction():
         self.A = Nuclei(A)
         self.b = Nuclei(b)
         self.B = Nuclei(B)
-        __Q = ((self.a.m['value']+self.A.m['value'])-(self.b.m['value']+self.B.m['value']))
-        __dQ = np.sqrt(self.a.m['unc']**2+self.A.m['unc']**2+self.b.m['unc']**2+self.B.m['unc']**2) #using quadrature
-        self.Q = measured_value(__Q,__dQ)
-        self.B_field = B_field #mag field
-        self.q = self.b.Z #charge of projectile
-        self.E_lab = measured_value(E_lab,E_lab_unc)
+        __Q = ((self.a.m['value'] + self.A.m['value']) -
+               (self.b.m['value'] + self.B.m['value']))
+        __dQ = np.sqrt(self.a.m['unc']**2+self.A.m['unc']**2 +
+                       self.b.m['unc']**2 + self.B.m['unc']**2)  # using quadrature
+        self.Q = measured_value(__Q, __dQ)
+        self.B_field = B_field  # mag field
+        self.q = self.b.Z  # charge of projectile
+        if E_lab_unc:
+            self.E_lab = measured_value(E_lab, E_lab_unc)
+        else:
+            self.E_lab = E_lab
         self.theta = theta
-        
-        
+        if not mass_unc:
+            self.a.m['unc'] = 0.0
+            self.A.m['unc'] = 0.0
+            self.b.m['unc'] = 0.0
+            self.B.m['unc'] = 0.0
+            
     def name(self):
         print self.a.name+' + '+self.A.name+' -> '+self.B.name+' + '+self.b.name
+
 
 class Focal_Plane_Fit():
 
     def __init__(self):
 
-        self.reactions = {} 
-        #points is a list of dictionaries with rho,channel entry structure. Each of those has a value/uncertainty component.
+        self.reactions = {}
+        # Points is a list of dictionaries with rho,channel entry structure.
+        # Each of those has a value/uncertainty component.
         self.points = []
         self.fits = {}
         self.fits_bay = {}
         self.output_peaks = []
-        
+
     def add_reaction(self):
-        #take user input for reaction
+        # take user input for reaction
         a = str(raw_input('Enter projectile \n'))
         A = str(raw_input('Enter target \n'))
         b = str(raw_input('Enter detected particle \n'))
@@ -112,26 +119,28 @@ class Focal_Plane_Fit():
         B_field = float(raw_input('What was the B field setting? \n'))
         E_lab = float(raw_input('Beam energy? \n'))
         E_lab_unc = float(raw_input('Beam energy uncertainty? \n'))
-        theta = float(raw_input('What is the lab angle? \n'))#making the assumption this points are all from the same theta
-        self.reactions[len(self.reactions.keys())] = Reaction(a,A,b,B,B_field,E_lab,E_lab_unc,theta) #keys for dictionary go from 0,..,n 
-        print 'Reaction',(len(self.reactions.keys())-1),'has been defined as '+a+' + '+A+' -> '+B+' + '+b
-        print 'E_beam =',E_lab,'+/- MeV',E_lab_unc,'With B-Field',B_field,'T' 
-        
-    def add_point(self,reaction,level,level_unc,channel,channel_unc):
-        rho,rho_unc,rho_trace = self.calc_rho(reaction,level,level_unc) #get rho and uncertainty
-        rho = measured_value(rho,rho_unc) #convert to dict
-        channel = measured_value(channel,channel_unc) 
-        point = {'rho':rho,'channel':channel,'trace':rho_trace} 
+        theta = float(raw_input('What is the lab angle? \n')) # making the assumption this points are all from the same theta
+        self.reactions[len(self.reactions.keys())] = Reaction(a, A, b, B,
+                                                              B_field, E_lab, E_lab_unc, theta) #keys for dictionary go from 0,..,n 
+        print 'Reaction', (len(self.reactions.keys())-1),'has been defined as '+a+' + '+A+' -> '+B+' + '+b
+        print 'E_beam =', E_lab,'+/- MeV', E_lab_unc, 'With B-Field', B_field,'T' 
+
+    def add_point(self, reaction, level,
+                  level_unc, channel, channel_unc):
+        rho, rho_unc, rho_trace = self.calc_rho(reaction,level,level_unc)  # get rho and uncertainty
+        rho = measured_value(rho, rho_unc)  # convert to dict
+        channel = measured_value(channel, channel_unc)
+        point = {'rho': rho, 'channel': channel, 'trace': rho_trace}
         self.points.append(point)
-        
-    #add a calibration point which includes rho and an associated channel value    
+
+    # add a calibration point which includes rho and an associated channel value
     def input_point(self):
         reaction = int(raw_input('Which reaction(0...n)? \n'))
         channel = float(raw_input('Enter the peak channel number. \n'))
         channel_unc = float(raw_input('What is the centroid uncertainty? \n'))
         level = float(raw_input('Enter the peak energy (MeV). \n'))
         level_unc = float(raw_input('Enter the peak uncertainty (MeV). \n'))
-        self.add_point(reaction,level,level_unc,channel,channel_unc)
+        self.add_point(reaction, level, level_unc, channel, channel_unc)
 
     def create_distributions(self,reaction):
         reaction_variables = vars(reaction) #get variables from reaction
@@ -161,33 +170,32 @@ class Focal_Plane_Fit():
         return normals
     
     #added Monte Carlo error propagation for rho     
-    def calc_rho(self,reaction,E_level,E_level_unc,steps=10000,burn=1000):
+    def calc_rho(self,reaction,E_level,E_level_unc,steps=11000,burn=1000):
         reaction = self.reactions[reaction] #just for short hand pick out reaction
         #print reaction.name() #just make sure you know which reaction is being calculated
         E_level = pm.Normal('E_level',E_level,(1.0/E_level_unc)**2.0)#setup normal distribution for E_level
         normals = self.create_distributions(reaction)
         normals["E_level"] = E_level #go ahead and add energy level
         #using pymc2 to give uncertainty on rho. This function accepts the sampled points and returns the rho value
+               
+               
         @pm.deterministic
         def rho_func(a=normals["a"], A=normals["A"], b=normals["b"], B=normals["B"],
                      E_level=normals["E_level"], theta=normals["theta"], q=normals["q"],
                      B_field=normals["B_field"],E_lab = normals["E_lab"],Q=normals["Q"]):
-            #Based on Equation C.5 & C.6 for Christian's book.
+            # formalism taken from http://skisickness.com/2010/04/25/
             theta = theta*(np.pi/180.0) #to radians 
-            r = (np.sqrt(a*b*E_lab)/(b+B))*np.cos(theta) 
-            s = (E_lab*(B-a)+B*(Q-E_level))/(b+B)
-            Eb =  (r + np.sqrt(r**2.0+s))**2.0 #We only care about positive solutions
+            s = (A+a+E_lab)**2.0-(2*a*(E_lab)+(E_lab)**2.0) #relativistic invariant
+            pcm = np.sqrt(((s-a**2.0-A**2.0)**2.0-(4.*a**2.0*A**2.0))/(4.*s)) # com p
+            chi = np.log((pcm+np.sqrt(A**2.0+pcm**2.0))/A) # rapidity
+            p_prime = np.sqrt(((s-b**2.0-(B+E_level)**2.0)**2.0-(4.*b**2.0*(B+E_level)**2.0))/(4.*s)) # com p of products
+            # now solve for momentum of b, terms are just for ease  
+            term1 = np.sqrt(b**2.0+p_prime**2.0)*np.sinh(chi)*np.cos(theta) 
+            term2 = np.cosh(chi)*np.sqrt(p_prime**2.0-(b**2.0*np.sin(theta)**2.0*np.sinh(chi)**2.0))
+            term3 = 1.0+np.sin(theta)**2.0*np.sinh(chi)**2.0
+            p = ((term1+term2)/term3)
+            rho = (.3335641*p)/(q*B_field) # from enge's paper 
 
-            #Check if solution is real.
-            if (np.isnan(Eb)):
-                print "Reaction is energetically forbidden!!"
-                return 0.0 
-
-            p = np.sqrt(2.0*b*Eb+Eb**2.0) #"Relativistic" but Eb is not calculated that way  
-            rho = p/(q*B_field)*.33356 #enge's paper not sure about this
-            
-            
-            #Return the positive solutions squared. 
             return rho
 
         #define model
@@ -226,19 +234,19 @@ class Focal_Plane_Fit():
             channel_mu = np.sum(x_channel)/float(N) #scale will be average of all calibration peaks
             x_channel_scaled = x_channel-channel_mu
             #create bounds
-            abound = lambda x:(-1000.0,1000.0) #creates a tuple
+            abound = lambda x:(-100.0,100.0) #creates a tuple
             bounds = [abound(x) for x in xrange(order+1)] #list of tuples
             #differential_evolution method, much faster than basin hopping with nelder-mead and seems to get same answers
             sol = optimize.differential_evolution(chi_square,bounds,maxiter=100000,args=(x_rho,x_channel_scaled,x_unc))
             #tell myself what I did
-            chi2 = sol.fun/(N-(order))
+            chi2 = sol.fun/(N-(order+1))
             print "Chi Square is", chi2
             print "Fit parameters are (from highest order term to lowest)",sol.x
             #now adjust uncertainty to do fit again
             x_unc[:] = self.adjust_unc(np.poly1d(sol.x),x_channel_scaled,x_rho,x_channel_unc,x_unc)
             print "Now doing adjusted unc fit"
             sol = optimize.differential_evolution(chi_square,bounds,maxiter=100000,args=(x_rho,x_channel_scaled,x_unc))
-            chi2 = sol.fun/(N-(order))
+            chi2 = sol.fun/(N-(order+1))
             print "Chi Square is", chi2
             print "Adjusted fit parameters are (from highest order term to lowest)",sol.x
             self.fits[order] = np.poly1d(sol.x) #add to dictionary the polynomial object
@@ -259,22 +267,22 @@ class Focal_Plane_Fit():
         return new_unc
     
     #now to try Bayesian fitting method          
-    def bay_fit(self,order=2,trace_plot=False,plot=True):
+    def bay_fit(self,order=2,trace_plot=False,plot=True,
+                iterations=100000,burn=50000,thin=10):
         
         #get data
         x_obs = np.asarray([ele['channel']['value'] for ele in self.points])
         channel_mu = np.sum(x_obs)/float(len(x_obs))
         x_scaled = x_obs - channel_mu
         x_unc = np.asarray([ele['channel']['unc'] for ele in self.points])
-        #switch to log normal parameters
+        #y data scale to make unc on roughly same scale as x unc
         y_obs = np.asarray([ele['rho']['value'] for ele in self.points])
         y_unc = np.asarray([ele['rho']['unc'] for ele in self.points])
         
         letters = string.ascii_uppercase #all upper case letters for prior names
-        #uniform prior generator
-        priors = {letters[i]:pm.Normal(letters[i],mu=0.0,tau=.001) for i in xrange(order+1)} #Normal priors
-        #priors[max(priors.keys())] = pm.Uniform(max(priors.keys()),0,100) #intercept is positive and between 0 and 100 cm
-        sorted_priors = np.asarray([j for i,j in sorted(priors.items())])    
+        priors = {letters[i]:pm.Normal(letters[i],mu=0.0,tau=.1) for i in xrange(order+1)} #Normal priors sd = 10
+        sorted_priors = np.asarray([j for i,j in sorted(priors.items())])
+        sorted_priors[-1] = pm.Normal(letters[order],mu=0.0,tau=.01)
      
         #x uncertainties 
         x = pm.Normal('x',x_scaled,(1.0/x_unc)**2.0,size=len(x_scaled))
@@ -287,23 +295,34 @@ class Focal_Plane_Fit():
             total = np.poly1d(priors)(x)
             return total
         
-        y_fit = pm.Normal('y',mu=Npoly,tau=(1.0/y_unc)**2.0,value=y_obs,observed=True)
+        y_fit = pm.Normal('y',mu=Npoly,tau=(1.0/y_unc)**2.0,value=y_obs,observed=True) #generates fitted posterior
+        
+        # set model up
+        model = pm.Model(y_fit, Npoly, [sorted_priors, x])
+        mcmc = pm.MCMC(model)
 
-        #set model up
-        model = pm.Model(y_fit,[sorted_priors,x])
-        mcmc = pm.MCMC(model)   
-
-        #initialize values
+        # initialize values
         for i in xrange(order+1):
             sorted_priors[i].value = self.fits[order][order-i]
         
-        #set custom step for y
-        mcmc.sample(iter=100000,burn=50000,thin=10)
-        print 
+        #start sampling
+        mcmc.sample(iter=iterations,burn=burn,thin=thin)
+        print
+
+        #getting an "adjusted" chi square value based on .5*[chi+C]
+        N = ((iterations-burn)/thin)#reduced chi square needs to account for data,samples,and constraints
+        nu = (len(x_obs)-(order+1))#dof
+        chi = np.sum(((y_fit.get_value()[:,None]-Npoly.trace().T)/y_unc[:,None])**2.0)/N #normal chi square term
+        C = np.sum(((x_scaled[:,None]-x.trace().T)/x_unc[:,None])**2.0)/N #contribution from jitter in x
+        print r"\Chi is:", chi/nu
+        print "C is:", C/len(x_obs)
+        print "Adjusted chi squared after sampling is:", .5*(chi/nu+C/len(x_obs))
+        
+        #gives traces for diagnostic purposes
         if trace_plot:
             pm.Matplot.plot(mcmc)
             plt.show()
-
+   
         Fit = []
         
         for ele in sorted(priors.keys()):
@@ -313,7 +332,7 @@ class Focal_Plane_Fit():
             
         if plot:
             fit = np.poly1d([ele['value'] for ele in Fit])
-            residual_plot(x_scaled,y_obs,y_unc,fit,x_unc)
+            residual_plot(x_scaled,y_obs,y_unc,fit,xerr=x_unc)
             plt.show()
 
         Fit.append(channel_mu) #give offset 
@@ -321,15 +340,15 @@ class Focal_Plane_Fit():
 
     def input_peak(self):
         channel = float(raw_input("Enter channel number."))
-        channer_unc = float(raw_input("Enter channel uncertainty."))
+        channel_unc = float(raw_input("Enter channel uncertainty."))
         channel = measured_value(channel,channel_unc)
         self.peak_energy(channel)
         
     #finally given channel number use a fit to give energy         
     def peak_energy(self,reaction,channel,fit_order=2):
         if type(channel) == dict:
-            reaction = self.reactions[reaction]
-            normals = self.create_distributions(reaction) #get reaction variables as distributions
+            Reaction = self.reactions[reaction]
+            normals = self.create_distributions(Reaction) #get reaction variables as distributions
             #calc rho from normal distributions in polynomial fit
             coeff = []
             letters = string.ascii_uppercase
@@ -363,16 +382,20 @@ class Focal_Plane_Fit():
                         B_field=normals["B_field"],Q=normals["Q"]):
 
                 theta = theta*(np.pi/180.0) #to radians
-                r = (np.sqrt(a*b*E_lab))/(b+B)*np.cos(theta)  
-                constants = (B_field*rho*q)/.33356
-                Eb = (-b+np.sqrt(b**2.0+constants**2.0))#quadratic formula to get this 
-                w = ((np.sqrt(Eb)-r)**2.0-r**2.0)#another term to simplify equations
-                E = Q-(((b+B)*w-E_lab*(B-a))/B) #put it all together
-                return E
+                #r = (np.sqrt(a*b*E_lab))/(b+B)*np.cos(theta)  
+                pb = (B_field*rho*q)/.3335641 #momentum of b
+                pa = np.sqrt(2.0*a*E_lab+E_lab**2.0)
+                pB = np.sqrt(pa**2.0+pb**2.0-(2.0*pa*pb*np.cos(theta))) # conservation gives you this
+                #now do conservation of Energy
+                E_tot = E_lab+a+A # what we start out with
+                Eb = np.sqrt(pb**2.0+b**2.0)
+                EB = np.sqrt(pB**2.0+B**2.0)
+                Ex = E_tot - Eb - EB
+                return Ex
              
             model = pm.Model([calc_rho,E_level],coeff,Channel)
             mcmc = pm.MCMC(model)
-            mcmc.sample(10000,1000,verbose=0)
+            mcmc.sample(11000,1000)
             print
             mu =  mcmc.stats()['calc_rho']['mean']
             sig = mcmc.stats()['calc_rho']['standard deviation']
@@ -380,13 +403,15 @@ class Focal_Plane_Fit():
             E_sig = mcmc.stats()['E_level']['standard deviation']
             print "Rho",mu,"+/-",sig
             print "E_level",E,"+/-",E_sig
-        
+            output = {'Reaction':reaction,'Rho':measured_value(mu,sig),'E_level':measured_value(E,E_sig),'Channel':channel,
+                      'Trace':E_level.trace()} #gather values into dictionary
+            self.output_peaks.append(output) #append to list 
         else:
             print "Need a dictionary of value and uncertainty!!"
         
 
-    #simple function to read in a file with calibration points and preform a fit on them    
-    def read_calibration(self,cal_file,reaction=None):
+    #function to read in a file with calibration points and preform a fit on them    
+    def read_calibration(self,cal_file,reaction=None,scale_factor=1.0):
         #can just pick, or ask for user input for reaction
         if type(reaction) != int:
             reaction = int(raw_input('Which reaction(0...n)? \n'))
@@ -394,11 +419,21 @@ class Focal_Plane_Fit():
         for i in data.index:
             level = data["level"][i]
             level_unc = data["level_unc"][i]
-            channel = data["channel"][i]
-            channel_unc = data["channel_unc"][i]
+            channel = (data["channel"][i])/scale_factor
+            channel_unc = (data["channel_unc"][i])/scale_factor
             self.add_point(reaction,level,level_unc,channel,channel_unc)
-        
-
+            
+    #reads file with channel and channel_unc and gives fitted values  
+    def read_peaks(self,peak_file,reaction=None,fit_order=2,scale_factor=1.0):
+        if type(reaction) != int:
+            reaction = int(raw_input('Which reaction(0...n)? \n'))
+        data = pd.read_csv(peak_file,sep='\s+')
+        for i in data.index:
+            channel = (data["channel"][i])/scale_factor
+            channel_unc = (data["channel_unc"][i])/scale_factor
+            self.peak_energy(reaction,measured_value(channel,channel_unc),fit_order=fit_order)
+            
+            
 #test on some pretty suspect data, just for basic functionality checks
 def atest():
     test = Focal_Plane_Fit()
@@ -408,7 +443,8 @@ def atest():
     test.fit()
 
 
-#this data corresponds to a 'good' fit I got with a SPANC fit. Should be used to check the bay_fit function     
+# this data corresponds to a 'good' fit I got with a SPANC fit.
+# Should be used to check the bay_fit function.
 def btest():
     
     test = Focal_Plane_Fit()

@@ -11,7 +11,7 @@ def residual_plot(datax,datay,err,fit_funtion,xerr=None):
     res = datay-fit_funtion(datax) #calculate the residuals
     
     #generate fit line
-    x = np.linspace(min(datax)-100,max(datax)+100,10000) #10000 points for line 
+    x = np.linspace(min(datax),max(datax),10000) #10000 points for line 
     y = fit_funtion(x)
 
     #create the the grid that the fits and residuals will be show in.
